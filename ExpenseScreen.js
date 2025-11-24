@@ -8,6 +8,8 @@ import {
   FlatList,
   TouchableOpacity,
   StyleSheet,
+  Modal,
+  Alert,
 } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 
@@ -19,12 +21,41 @@ export default function ExpenseScreen() {
   const [category, setCategory] = useState('');
   const [note, setNote] = useState('');
 
+  const [filter, setFilter] = useState('All');
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingExpense, setEditingExpense] = useState(null);
+  const [editAmount, setEditAmount] = useState('');
+  const [editCategory, setEditCategory] = useState('');
+  const [editNote, setEditNote] = useState('');
+  const [editDate, setEditDate] = useState('');
+
+
   const loadExpenses = async () => {
-    const rows = await db.getAllAsync(
-      'SELECT * FROM expenses ORDER BY id DESC;'
-    );
+    let query = 'SELECT * FROM expenses';
+    let params = [];
+    if (filter === 'ThisWeek') {
+      const today = new Date();
+      const firstDay = new Date(today.setDate(today.getDate() - today.getDay()))
+      .toISOString()
+      .split('T')[0];
+      query += ' WHERE date >= ?';
+      params.push(firstDay);
+    } else if (filter === 'ThisMonth') {
+      const today = new Date();
+      const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1)
+      .toISOString()
+      .split('T')[0];
+      query += ' WHERE date >= ?';
+      params.push(firstOfMonth);
+    }
+    query += ' ORDER BY date DESC;';
+    const rows = await db.getAllAsync(query, params);
     setExpenses(rows);
   };
+  useEffect(() => {
+    loadExpenses();
+  }, [filter]);
   const addExpense = async () => {
     const amountNumber = parseFloat(amount);
 
@@ -40,10 +71,10 @@ export default function ExpenseScreen() {
       // Category is required
       return;
     }
-
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
     await db.runAsync(
-      'INSERT INTO expenses (amount, category, note) VALUES (?, ?, ?);',
-      [amountNumber, trimmedCategory, trimmedNote || null]
+      'INSERT INTO expenses (amount, category, note, date) VALUES (?, ?, ?, ?);',
+      [amountNumber, trimmedCategory, trimmedNote || null, today]
     );
 
     setAmount('');
@@ -58,6 +89,33 @@ export default function ExpenseScreen() {
     await db.runAsync('DELETE FROM expenses WHERE id = ?;', [id]);
     loadExpenses();
   };
+  const startEdit = (expense) => {
+  setIsEditing(true);
+  setEditingExpense(expense);
+  setEditAmount(String(expense.amount));
+  setEditCategory(expense.category);
+  setEditNote(expense.note || '');
+  setEditDate(expense.date);
+};
+const saveEdit = async () => {
+  if (!editingExpense) return;
+  const amountNumber = parseFloat(editAmount);
+  if (isNaN(amountNumber) || amountNumber <= 0) {
+    Alert.alert("Invalid amount");
+    return;
+  }
+  await db.runAsync(
+    `
+    UPDATE expenses
+    SET amount = ?, category = ?, note = ?, date = ?
+    WHERE id = ?;
+    `,
+    [amountNumber, editCategory, editNote || null, editDate, editingExpense.id]
+  );
+setIsEditing(false);
+setEditingExpense(null);
+loadExpenses();
+};
 
 
   const renderExpense = ({ item }) => (
@@ -67,7 +125,9 @@ export default function ExpenseScreen() {
         <Text style={styles.expenseCategory}>{item.category}</Text>
         {item.note ? <Text style={styles.expenseNote}>{item.note}</Text> : null}
       </View>
-
+<TouchableOpacity onPress={() => startEdit(item)}>
+      <Text style={{ color: '#60a5fa', fontSize: 18, marginRight: 12 }}>Edit</Text>
+    </TouchableOpacity>
       <TouchableOpacity onPress={() => deleteExpense(item.id)}>
         <Text style={styles.delete}>✕</Text>
       </TouchableOpacity>
@@ -81,7 +141,8 @@ export default function ExpenseScreen() {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           amount REAL NOT NULL,
           category TEXT NOT NULL,
-          note TEXT
+          note TEXT,
+          date TEXT NOT NULL
         );
       `);
 
@@ -90,9 +151,25 @@ export default function ExpenseScreen() {
 
     setup();
   }, []);
-
+const totalSpending = expenses.reduce((sum, e) => sum + e.amount, 0);
+const categoryTotals = expenses.reduce((totals, e) => {
+  if (!totals[e.category]) totals[e.category] = 0;
+  totals[e.category] += e.amount;
+  return totals;
+}, {});
   return (
+    
     <SafeAreaView style={styles.container}>
+      <View style={{ marginBottom: 16}}>
+        {Object.entries(categoryTotals).map(([category, amt]) => (
+          <Text key={category} style={{ color: '#fff' }}>
+            {category}: ${amt.toFixed(2)}
+          </Text>
+        ))}
+      </View>
+      <Text style={{ color: '#fff', fontWeight: '700', marginVertical: 8 }}>
+      Total: ${totalSpending.toFixed(2)}
+    </Text>
       <Text style={styles.heading}>Student Expense Tracker</Text>
 
       <View style={styles.form}>
@@ -119,8 +196,18 @@ export default function ExpenseScreen() {
           onChangeText={setNote}
         />
         <Button title="Add Expense" onPress={addExpense} />
+        <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 12}}>
+          {['All', 'ThisWeek', 'ThisMonth'].map(f => (
+            <Button
+            key={f}
+            title={f === 'ThisWeek' ? 'This Week' : f === 'ThisMonth' ? 'This Month' : 'All'}
+            onPress={() => setFilter(f)}
+            />
+          ))}
+        </View>
       </View>
-
+      
+      
       <FlatList
         data={expenses}
         keyExtractor={(item) => item.id.toString()}
@@ -133,6 +220,50 @@ export default function ExpenseScreen() {
       <Text style={styles.footer}>
         Enter your expenses and they’ll be saved locally with SQLite.
       </Text>
+      <Modal visible={isEditing} animationType="slide" transparent={true}>
+  <View style={{ flex: 1, backgroundColor: '#000000aa', justifyContent: 'center' }}>
+    <View style={{ backgroundColor: '#1f2937', margin: 20, padding: 20, borderRadius: 10 }}>
+      <Text style={{ color: '#fff', fontSize: 18, marginBottom: 10 }}>Edit Expense</Text>
+
+      <TextInput
+        style={styles.input}
+        keyboardType="numeric"
+        value={editAmount}
+        onChangeText={setEditAmount}
+        placeholder="Amount"
+        placeholderTextColor="#9ca3af"
+      />
+
+      <TextInput
+        style={styles.input}
+        value={editCategory}
+        onChangeText={setEditCategory}
+        placeholder="Category"
+        placeholderTextColor="#9ca3af"
+      />
+
+      <TextInput
+        style={styles.input}
+        value={editNote}
+        onChangeText={setEditNote}
+        placeholder="Note"
+        placeholderTextColor="#9ca3af"
+      />
+
+      <TextInput
+        style={styles.input}
+        value={editDate}
+        onChangeText={setEditDate}
+        placeholder="Date (YYYY-MM-DD)"
+        placeholderTextColor="#9ca3af"
+      />
+
+      <Button title="Save Changes" onPress={saveEdit} />
+      <View style={{ height: 10 }} />
+      <Button title="Cancel" color="red" onPress={() => setIsEditing(false)} />
+    </View>
+  </View>
+</Modal>
     </SafeAreaView>
   );
 }
